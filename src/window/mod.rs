@@ -95,6 +95,11 @@ pub enum UserEvent {
     #[allow(dead_code)]
     RedrawRequested,
     NeovimExited,
+    ReconnectStart {
+        address: String,
+        wait: u64,
+    },
+    ReconnectStop,
 }
 
 impl From<Vec<DrawCommand>> for UserEvent {

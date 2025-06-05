@@ -4,18 +4,20 @@
 #[cfg(debug_assertions)]
 use core::fmt;
 use std::{
-    io::{Error, Result},
+    io::{Error, ErrorKind, Result},
     process::Stdio,
 };
 
 use anyhow::Context;
 use nvim_rs::{error::LoopError, neovim::Neovim, Handler};
+use std::time::Duration;
 use tokio::{
     io::{split, AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader},
     net::TcpStream,
     process::{Child, Command},
     spawn,
     task::JoinHandle,
+    time::timeout,
 };
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -60,13 +62,17 @@ impl NeovimSession {
         });
         let handshake_message = "NeovideToNeovimMagicHandshakeMessage";
 
-        let handshake_res = Neovim::<NeovimWriter>::handshake(
-            reader.compat(),
-            Box::new(writer.compat_write()),
-            handler,
-            handshake_message,
+        let handshake_res = timeout(
+            Duration::from_secs(5),
+            Neovim::<NeovimWriter>::handshake(
+                reader.compat(),
+                Box::new(writer.compat_write()),
+                handler,
+                handshake_message,
+            ),
         )
-        .await;
+        .await
+        .map_err(|_| Error::new(ErrorKind::TimedOut, "Handshake timeout"))?;
         match handshake_res {
             Err(err) => {
                 if let Some(stderr_task) = stderr_task {
@@ -151,10 +157,17 @@ impl NeovimInstance {
 
     async fn connect_to_server(address: String) -> Result<(BoxedReader, BoxedWriter)> {
         if address.contains(':') {
-            Ok(Self::split(TcpStream::connect(address).await?))
+            let stream = timeout(Duration::from_secs(5), TcpStream::connect(&address)).await??;
+            Ok(Self::split(stream))
         } else {
             #[cfg(unix)]
-            return Ok(Self::split(tokio::net::UnixStream::connect(address).await?));
+            return Ok(Self::split(
+                timeout(
+                    Duration::from_secs(5),
+                    tokio::net::UnixStream::connect(address),
+                )
+                .await??,
+            ));
 
             #[cfg(windows)]
             {

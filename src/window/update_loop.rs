@@ -374,6 +374,15 @@ impl ApplicationHandler<UserEvent> for UpdateLoop {
                 // They will be processed immediately after the rendering.
                 self.pending_draw_commands.push(batch);
             }
+            UserEvent::ReconnectStart { address, wait } => {
+                self.window_wrapper
+                    .start_reconnect(address, Duration::from_secs(wait));
+                self.should_render = ShouldRender::Immediately;
+            }
+            UserEvent::ReconnectStop => {
+                self.window_wrapper.stop_reconnect();
+                self.should_render = ShouldRender::Immediately;
+            }
             _ => {
                 self.window_wrapper.handle_user_event(event);
                 self.should_render = ShouldRender::Immediately;

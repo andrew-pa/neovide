@@ -17,6 +17,7 @@ use rmpv::Utf8String;
 use tokio::{
     runtime::{Builder, Runtime},
     select,
+    time::sleep,
     time::timeout,
 };
 use winit::event_loop::EventLoopProxy;
@@ -170,6 +171,38 @@ async fn run(session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
     proxy.send_event(UserEvent::NeovimExited).ok();
 }
 
+async fn run_with_reconnect(
+    handler: NeovimHandler,
+    grid_size: Option<GridSize<u32>>,
+    settings: Arc<Settings>,
+    proxy: EventLoopProxy<UserEvent>,
+) {
+    let address = settings.get::<CmdLineSettings>().server.unwrap_or_default();
+    let mut wait = Duration::from_secs(1);
+    loop {
+        match launch(handler.clone(), grid_size, settings.clone()).await {
+            Ok(session) => {
+                proxy.send_event(UserEvent::ReconnectStop).ok();
+                run(session, proxy.clone()).await;
+                wait = Duration::from_secs(1);
+            }
+            Err(err) => {
+                log::error!("Failed to connect: {err}");
+            }
+        }
+        proxy
+            .send_event(UserEvent::ReconnectStart {
+                address: address.clone(),
+                wait: wait.as_secs() as u64,
+            })
+            .ok();
+        sleep(wait).await;
+        if wait < Duration::from_secs(30) {
+            wait *= 2;
+        }
+    }
+}
+
 impl NeovimRuntime {
     pub fn new() -> Result<Self, Error> {
         let runtime = Builder::new_multi_thread().enable_all().build()?;
@@ -185,10 +218,18 @@ impl NeovimRuntime {
         settings: Arc<Settings>,
     ) -> Result<()> {
         let handler = start_editor(event_loop_proxy.clone(), running_tracker, settings.clone());
-        let session = self
-            .runtime
-            .block_on(launch(handler, grid_size, settings))?;
-        self.runtime.spawn(run(session, event_loop_proxy));
+        if settings.get::<CmdLineSettings>().server.is_some() {
+            let proxy = event_loop_proxy.clone();
+            let settings_clone = settings.clone();
+            self.runtime.spawn(async move {
+                run_with_reconnect(handler, grid_size, settings_clone, proxy).await;
+            });
+        } else {
+            let session = self
+                .runtime
+                .block_on(launch(handler, grid_size, settings))?;
+            self.runtime.spawn(run(session, event_loop_proxy));
+        }
         Ok(())
     }
 }
