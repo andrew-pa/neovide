@@ -62,7 +62,7 @@ impl ReconnectIndicator {
             return;
         }
         let remaining = self.end_time.saturating_duration_since(Instant::now());
-        let secs = remaining.as_secs();
+        let secs = remaining.as_secs_f32().ceil() as u64;
         let text = format!("Reconnecting to {} in {}s", self.address, secs);
 
         canvas.save();

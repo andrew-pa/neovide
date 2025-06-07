@@ -33,6 +33,7 @@ pub use command::create_nvim_command;
 pub use events::*;
 pub use session::NeovimWriter;
 pub use ui_commands::{send_ui, start_ui_command_handler, ParallelCommand, SerialCommand};
+use ui_commands::update_current_nvim;
 
 const NEOVIM_REQUIRED_VERSION: &str = "0.10.0";
 
@@ -115,7 +116,6 @@ async fn launch(
     )
     .await?;
 
-    start_ui_command_handler(session.neovim.clone(), settings.clone());
     settings.read_initial_values(&session.neovim).await?;
 
     let mut options = UiAttachOptions::new();
@@ -167,6 +167,7 @@ async fn run(session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
     if let Some(stderr_task) = &mut session.stderr_task {
         timeout(Duration::from_millis(500), stderr_task).await.ok();
     };
+    update_current_nvim(None);
     proxy.send_event(UserEvent::NeovimExited).ok();
 }
 
@@ -191,6 +192,7 @@ async fn run_server(mut session: NeovimSession) {
     if let Some(stderr_task) = &mut session.stderr_task {
         timeout(Duration::from_millis(500), stderr_task).await.ok();
     }
+    update_current_nvim(None);
     debug!("Server session ended");
 }
 
@@ -208,6 +210,7 @@ async fn run_with_reconnect(
         match launch(handler.clone(), grid_size, settings.clone()).await {
             Ok(session) => {
                 info!("Connected to {address}");
+                start_ui_command_handler(session.neovim.clone(), settings.clone());
                 proxy.send_event(UserEvent::ReconnectStop).ok();
                 run_server(session).await;
                 warn!("Connection to {address} lost");
@@ -255,7 +258,8 @@ impl NeovimRuntime {
         } else {
             let session = self
                 .runtime
-                .block_on(launch(handler, grid_size, settings))?;
+                .block_on(launch(handler, grid_size, settings.clone()))?;
+            start_ui_command_handler(session.neovim.clone(), settings);
             self.runtime.spawn(run(session, event_loop_proxy));
         }
         Ok(())

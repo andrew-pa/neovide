@@ -1,4 +1,7 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+
+use once_cell::sync::Lazy;
+use parking_lot::RwLock;
 
 use log::trace;
 
@@ -269,32 +272,45 @@ impl AsRef<str> for UiCommand {
     }
 }
 
-static UI_COMMAND_CHANNEL: OnceLock<LoggingSender<UiCommand>> = OnceLock::new();
+static UI_COMMAND_CHANNEL: Lazy<RwLock<Option<LoggingSender<UiCommand>>>> = Lazy::new(|| RwLock::new(None));
+static CURRENT_NVIM: Lazy<Arc<RwLock<Option<Neovim<NeovimWriter>>>>> = Lazy::new(|| Arc::new(RwLock::new(None)));
+
+pub fn update_current_nvim(nvim: Option<Neovim<NeovimWriter>>) {
+    *CURRENT_NVIM.write() = nvim;
+}
 
 pub fn start_ui_command_handler(nvim: Neovim<NeovimWriter>, settings: Arc<Settings>) {
+    update_current_nvim(Some(nvim.clone()));
+
+    let mut sender_guard = UI_COMMAND_CHANNEL.write();
+    if sender_guard.is_some() {
+        return;
+    }
+
     let (serial_tx, mut serial_rx) = unbounded_channel::<SerialCommand>();
-    let ui_command_nvim = nvim.clone();
     let (sender, mut ui_command_receiver) = unbounded_channel();
-    UI_COMMAND_CHANNEL
-        .set(LoggingSender::attach(sender, "UIComand"))
-        .expect("The UI command channel is already created");
+    *sender_guard = Some(LoggingSender::attach(sender, "UIComand"));
+    drop(sender_guard);
+
+    let nvim_holder = CURRENT_NVIM.clone();
     tokio::spawn(async move {
         loop {
             match ui_command_receiver.recv().await {
                 Some(UiCommand::Serial(serial_command)) => {
                     tracy_dynamic_zone!(serial_command.as_ref());
-                    // This can fail if the serial_rx loop exits before this one, so ignore the errors
                     let _ = serial_tx.send(serial_command);
                 }
                 Some(UiCommand::Parallel(parallel_command)) => {
                     tracy_dynamic_zone!(parallel_command.as_ref());
-                    let ui_command_nvim = ui_command_nvim.clone();
-                    let settings = settings.clone();
-                    tokio::spawn(async move {
-                        parallel_command
-                            .execute(&ui_command_nvim, settings.as_ref())
-                            .await;
-                    });
+                    let nvim_opt = { nvim_holder.read().clone() };
+                    if let Some(nvim) = nvim_opt {
+                        let settings = settings.clone();
+                        tokio::spawn(async move {
+                            parallel_command
+                                .execute(&nvim, settings.as_ref())
+                                .await;
+                        });
+                    }
                 }
                 None => break,
             }
@@ -302,6 +318,7 @@ pub fn start_ui_command_handler(nvim: Neovim<NeovimWriter>, settings: Arc<Settin
         log::info!("ui command receiver finished");
     });
 
+    let nvim_holder = CURRENT_NVIM.clone();
     tokio::spawn(async move {
         tracy_fiber_enter!("Serial command");
         loop {
@@ -310,10 +327,13 @@ pub fn start_ui_command_handler(nvim: Neovim<NeovimWriter>, settings: Arc<Settin
             tracy_fiber_enter!("Serial command");
             match res {
                 Some(serial_command) => {
-                    tracy_dynamic_zone!(serial_command.as_ref());
-                    tracy_fiber_leave();
-                    serial_command.execute(&nvim).await;
-                    tracy_fiber_enter!("Serial command");
+                    let nvim_opt = { nvim_holder.read().clone() };
+                    if let Some(nvim) = nvim_opt {
+                        tracy_dynamic_zone!(serial_command.as_ref());
+                        tracy_fiber_leave();
+                        serial_command.execute(&nvim).await;
+                        tracy_fiber_enter!("Serial command");
+                    }
                 }
                 None => break,
             }
@@ -327,8 +347,7 @@ where
     T: Into<UiCommand>,
 {
     let command: UiCommand = command.into();
-    let _ = UI_COMMAND_CHANNEL
-        .get()
-        .expect("The UI command channel has not been initialized")
-        .send(command);
+    if let Some(sender) = UI_COMMAND_CHANNEL.read().as_ref() {
+        let _ = sender.send(command);
+    }
 }
