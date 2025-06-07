@@ -74,7 +74,10 @@ impl NeovimSession {
         )
         .await
         .map_err(|_| Error::new(ErrorKind::TimedOut, "Handshake timeout"))?;
-        log::debug!("Handshake result: {:?}", handshake_res.as_ref().map(|_| "ok"));
+        log::debug!(
+            "Handshake result: {:?}",
+            handshake_res.as_ref().map(|_| "ok")
+        );
         match handshake_res {
             Err(err) => {
                 log::error!("Handshake failed: {err}");
@@ -169,7 +172,11 @@ impl NeovimInstance {
         } else {
             #[cfg(unix)]
             {
-                let stream = timeout(Duration::from_secs(5), tokio::net::UnixStream::connect(&address)).await??;
+                let stream = timeout(
+                    Duration::from_secs(5),
+                    tokio::net::UnixStream::connect(&address),
+                )
+                .await??;
                 log::debug!("Unix socket connect succeeded");
                 return Ok(Self::split(stream));
             }

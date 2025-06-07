@@ -272,18 +272,27 @@ impl AsRef<str> for UiCommand {
     }
 }
 
-static UI_COMMAND_CHANNEL: Lazy<RwLock<Option<LoggingSender<UiCommand>>>> = Lazy::new(|| RwLock::new(None));
-static CURRENT_NVIM: Lazy<Arc<RwLock<Option<Neovim<NeovimWriter>>>>> = Lazy::new(|| Arc::new(RwLock::new(None)));
+static UI_COMMAND_CHANNEL: Lazy<RwLock<Option<LoggingSender<UiCommand>>>> =
+    Lazy::new(|| RwLock::new(None));
+static CURRENT_NVIM: Lazy<Arc<RwLock<Option<Neovim<NeovimWriter>>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(None)));
 
 pub fn update_current_nvim(nvim: Option<Neovim<NeovimWriter>>) {
+    if nvim.is_some() {
+        log::debug!("Updated current Neovim handle");
+    } else {
+        log::debug!("Cleared current Neovim handle");
+    }
     *CURRENT_NVIM.write() = nvim;
 }
 
 pub fn start_ui_command_handler(nvim: Neovim<NeovimWriter>, settings: Arc<Settings>) {
+    log::debug!("Starting UI command handler");
     update_current_nvim(Some(nvim.clone()));
 
     let mut sender_guard = UI_COMMAND_CHANNEL.write();
     if sender_guard.is_some() {
+        log::debug!("UI command handler already running");
         return;
     }
 
@@ -306,9 +315,7 @@ pub fn start_ui_command_handler(nvim: Neovim<NeovimWriter>, settings: Arc<Settin
                     if let Some(nvim) = nvim_opt {
                         let settings = settings.clone();
                         tokio::spawn(async move {
-                            parallel_command
-                                .execute(&nvim, settings.as_ref())
-                                .await;
+                            parallel_command.execute(&nvim, settings.as_ref()).await;
                         });
                     }
                 }

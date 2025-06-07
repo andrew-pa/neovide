@@ -9,7 +9,7 @@ mod ui_commands;
 
 use std::{io::Error, ops::Add, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use itertools::Itertools;
 use log::{debug, info, warn};
 use nvim_rs::{error::CallError, Neovim, UiAttachOptions, Value};
@@ -17,7 +17,7 @@ use rmpv::Utf8String;
 use tokio::{
     runtime::{Builder, Runtime},
     select,
-    time::{sleep, timeout, interval},
+    time::{interval, sleep, timeout},
 };
 use winit::event_loop::EventLoopProxy;
 
@@ -32,8 +32,8 @@ use setup::{get_api_information, setup_neovide_specific_state};
 pub use command::create_nvim_command;
 pub use events::*;
 pub use session::NeovimWriter;
-pub use ui_commands::{send_ui, start_ui_command_handler, ParallelCommand, SerialCommand};
 use ui_commands::update_current_nvim;
+pub use ui_commands::{send_ui, start_ui_command_handler, ParallelCommand, SerialCommand};
 
 const NEOVIM_REQUIRED_VERSION: &str = "0.10.0";
 
@@ -74,6 +74,27 @@ pub async fn show_error_message(
     nvim.echo(prepared_lines, true, vec![]).await
 }
 
+async fn check_neovim_version(nvim: &Neovim<NeovimWriter>) -> Result<()> {
+    for attempt in 0..5 {
+        match nvim
+            .command_output(&format!("echo has('nvim-{NEOVIM_REQUIRED_VERSION}')"))
+            .await
+        {
+            Ok(output) if output == "1" => return Ok(()),
+            Ok(other) => {
+                debug!("Version check attempt {attempt}: {other:?}");
+            }
+            Err(err) => {
+                debug!("Version check attempt {attempt} failed: {err}");
+            }
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+    Err(anyhow!(
+        "Neovide requires nvim version {NEOVIM_REQUIRED_VERSION} or higher"
+    ))
+}
+
 async fn launch(
     handler: NeovimHandler,
     grid_size: Option<GridSize<u32>>,
@@ -85,20 +106,8 @@ async fn launch(
         .await
         .context("Could not locate or start neovim process")?;
 
-    // Check the neovim version to ensure its high enough
-    let version_res = session
-        .neovim
-        .command_output(&format!("echo has('nvim-{NEOVIM_REQUIRED_VERSION}')"))
-        .await;
-    match version_res.as_deref() {
-        Ok("1") => {} // Version check passed
-        other => {
-            log::error!(
-                "Unexpected Neovim version check result: {:?}. Continuing anyway",
-                other
-            );
-        }
-    }
+    // Ensure the connected Neovim instance meets the minimum version
+    check_neovim_version(&session.neovim).await?;
 
     let cmdline_settings = settings.get::<CmdLineSettings>();
 
@@ -214,6 +223,7 @@ async fn run_with_reconnect(
                 info!("Connected to {address}");
                 start_ui_command_handler(session.neovim.clone(), settings.clone());
                 proxy.send_event(UserEvent::ReconnectStop).ok();
+                proxy.send_event(UserEvent::RedrawRequested).ok();
                 run_server(session).await;
                 warn!("Connection to {address} lost");
                 wait = Duration::from_secs(1);
@@ -228,6 +238,7 @@ async fn run_with_reconnect(
                 wait: wait.as_secs() as u64,
             })
             .ok();
+        proxy.send_event(UserEvent::RedrawRequested).ok();
         debug!("Retrying in {}s", wait.as_secs());
         sleep(wait).await;
         if wait < Duration::from_secs(30) {
