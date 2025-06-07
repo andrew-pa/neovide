@@ -170,7 +170,7 @@ async fn run(session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
     proxy.send_event(UserEvent::NeovimExited).ok();
 }
 
-async fn run_server(mut session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
+async fn run_server(mut session: NeovimSession) {
     debug!("Monitoring server connection");
     let mut ping_interval = interval(Duration::from_secs(5));
     loop {
@@ -191,7 +191,7 @@ async fn run_server(mut session: NeovimSession, proxy: EventLoopProxy<UserEvent>
     if let Some(stderr_task) = &mut session.stderr_task {
         timeout(Duration::from_millis(500), stderr_task).await.ok();
     }
-    proxy.send_event(UserEvent::NeovimExited).ok();
+    debug!("Server session ended");
 }
 
 async fn run_with_reconnect(
@@ -209,7 +209,7 @@ async fn run_with_reconnect(
             Ok(session) => {
                 info!("Connected to {address}");
                 proxy.send_event(UserEvent::ReconnectStop).ok();
-                run_server(session, proxy.clone()).await;
+                run_server(session).await;
                 warn!("Connection to {address} lost");
                 wait = Duration::from_secs(1);
             }
