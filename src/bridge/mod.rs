@@ -187,7 +187,7 @@ async fn run(session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
     proxy.send_event(UserEvent::NeovimExited).ok();
 }
 
-async fn run_server(mut session: NeovimSession) {
+async fn run_server(mut session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
     debug!("Monitoring server connection");
     let mut ping_interval = interval(Duration::from_secs(5));
     loop {
@@ -210,6 +210,7 @@ async fn run_server(mut session: NeovimSession) {
     }
     update_current_nvim(None);
     debug!("Server session ended");
+    proxy.send_event(UserEvent::NeovimExited).ok();
 }
 
 async fn run_with_reconnect(
@@ -229,9 +230,8 @@ async fn run_with_reconnect(
                 start_ui_command_handler(session.neovim.clone(), settings.clone());
                 proxy.send_event(UserEvent::ReconnectStop).ok();
                 proxy.send_event(UserEvent::RedrawRequested).ok();
-                run_server(session).await;
-                warn!("Connection to {address} lost");
-                wait = Duration::from_secs(1);
+                run_server(session, proxy.clone()).await;
+                return;
             }
             Err(err) => {
                 log::error!("Failed to connect: {err}");
