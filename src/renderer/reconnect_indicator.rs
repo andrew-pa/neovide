@@ -97,8 +97,9 @@ impl ReconnectIndicator {
         let width = self.font.skia_font.measure_str(&text, Some(&paint)).0;
         let text_pos = Point::new(
             center.0 - width / 2.0,
-            center.1 + spinner_radius + self.font.skia_font.size(),
+            center.1 + spinner_radius + self.font.skia_font.size()*2.0,
         );
+        paint.set_style(Style::Fill);
         canvas.draw_str(text, text_pos, &self.font.skia_font, &paint);
 
         canvas.restore();
