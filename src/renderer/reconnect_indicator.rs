@@ -71,8 +71,14 @@ impl ReconnectIndicator {
         paint.set_anti_alias(true);
 
         let spinner_radius = self.font.skia_font.size();
-        let center = (40.0, 40.0);
+        let size = canvas.base_layer_size();
+        let center = (size.width as f32 / 2.0, size.height as f32 / 2.0);
 
+        // Dim the background while reconnecting
+        paint.set_color(Color::from_argb(160, 0, 0, 0));
+        canvas.draw_paint(&paint);
+
+        // Draw the spinner
         paint.set_color(Color::from_argb(255, 80, 80, 80));
         canvas.draw_circle(center, spinner_radius, &paint);
 
@@ -81,9 +87,10 @@ impl ReconnectIndicator {
         let arm_y = center.1 + spinner_radius * self.angle.sin();
         canvas.draw_line(center, (arm_x, arm_y), &paint);
 
+        let width = self.font.skia_font.measure_str(&text, Some(&paint)).0;
         let text_pos = Point::new(
-            center.0 + spinner_radius + 10.0,
-            center.1 + self.font.skia_font.size() / 2.0,
+            center.0 - width / 2.0,
+            center.1 + spinner_radius + self.font.skia_font.size(),
         );
         canvas.draw_str(text, text_pos, &self.font.skia_font, &paint);
 
