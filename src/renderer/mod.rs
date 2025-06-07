@@ -218,6 +218,10 @@ impl Renderer {
         self.reconnect_indicator.stop();
     }
 
+    pub fn is_reconnecting(&self) -> bool {
+        self.reconnect_indicator.is_active()
+    }
+
     pub fn font_names(&self) -> Vec<String> {
         self.grid_renderer.font_names()
     }
