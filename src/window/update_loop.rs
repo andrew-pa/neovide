@@ -14,6 +14,7 @@ use crate::{
     profiling::{tracy_plot, tracy_zone},
     renderer::DrawCommand,
     settings::{Config, Settings},
+    running_tracker::RunningTracker,
     WindowSize,
 };
 
@@ -91,6 +92,7 @@ pub struct UpdateLoop {
     proxy: EventLoopProxy<UserEvent>,
 
     settings: Arc<Settings>,
+    running_tracker: RunningTracker,
 }
 
 impl UpdateLoop {
@@ -99,6 +101,7 @@ impl UpdateLoop {
         initial_config: Config,
         proxy: EventLoopProxy<UserEvent>,
         settings: Arc<Settings>,
+        running_tracker: RunningTracker,
     ) -> Self {
         let previous_frame_start = Instant::now();
         let last_dt = 0.0;
@@ -133,6 +136,7 @@ impl UpdateLoop {
             proxy,
 
             settings,
+            running_tracker,
         }
     }
 
@@ -352,8 +356,15 @@ impl ApplicationHandler<UserEvent> for UpdateLoop {
             _ => {}
         }
 
+        let was_close = matches!(event, WindowEvent::CloseRequested);
         if self.window_wrapper.handle_window_event(event) {
             self.should_render = ShouldRender::Immediately;
+            if was_close {
+                self.running_tracker.request_quit();
+                if self.window_wrapper.is_reconnecting() {
+                    event_loop.exit();
+                }
+            }
         }
         self.schedule_next_event(event_loop);
     }

@@ -218,11 +218,15 @@ async fn run_with_reconnect(
     grid_size: Option<GridSize<u32>>,
     settings: Arc<Settings>,
     proxy: EventLoopProxy<UserEvent>,
+    running_tracker: RunningTracker,
 ) {
     let address = settings.get::<CmdLineSettings>().server.unwrap_or_default();
     let mut wait = Duration::from_secs(1);
     debug!("Starting reconnect loop for {address}");
     loop {
+        if running_tracker.quit_requested() {
+            break;
+        }
         debug!("Attempting connection to {address}");
         match launch(handler.clone(), grid_size, settings.clone()).await {
             Ok(session) => {
@@ -266,12 +270,24 @@ impl NeovimRuntime {
         running_tracker: RunningTracker,
         settings: Arc<Settings>,
     ) -> Result<()> {
-        let handler = start_editor(event_loop_proxy.clone(), running_tracker, settings.clone());
+        let handler = start_editor(
+            event_loop_proxy.clone(),
+            running_tracker.clone(),
+            settings.clone(),
+        );
         if settings.get::<CmdLineSettings>().server.is_some() {
             let proxy = event_loop_proxy.clone();
             let settings_clone = settings.clone();
+            let running_tracker_clone = running_tracker.clone();
             self.runtime.spawn(async move {
-                run_with_reconnect(handler, grid_size, settings_clone, proxy).await;
+                run_with_reconnect(
+                    handler,
+                    grid_size,
+                    settings_clone,
+                    proxy,
+                    running_tracker_clone,
+                )
+                .await;
             });
         } else {
             let session = self

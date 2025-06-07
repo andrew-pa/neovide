@@ -206,6 +206,10 @@ impl WinitWindowWrapper {
         self.renderer.stop_reconnect();
     }
 
+    pub fn is_reconnecting(&self) -> bool {
+        self.renderer.is_reconnecting()
+    }
+
     pub fn handle_window_command(&mut self, command: WindowCommand) {
         tracy_zone!("handle_window_commands", 0);
         match command {
