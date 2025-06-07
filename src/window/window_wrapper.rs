@@ -197,6 +197,9 @@ impl WinitWindowWrapper {
 
     pub fn start_reconnect(&mut self, address: String, wait: Duration) {
         self.renderer.start_reconnect(address, wait);
+        if self.ui_state == UIState::Initing {
+            self.ui_state = UIState::WaitingForWindowCreate;
+        }
     }
 
     pub fn stop_reconnect(&mut self) {
