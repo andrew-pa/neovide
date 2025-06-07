@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use skia_safe::{Canvas, Color, Paint, Point};
+use skia_safe::{paint::Style, Canvas, Color, Paint, Path, Point, Rect};
 
 use crate::profiling::tracy_zone;
 use crate::renderer::fonts::font_loader::{FontKey, FontLoader, FontPair};
@@ -20,7 +20,7 @@ pub struct ReconnectIndicator {
 impl ReconnectIndicator {
     pub fn new(settings: Arc<Settings>) -> Self {
         let font_key = FontKey::default();
-        let mut loader = FontLoader::new(16.0);
+        let mut loader = FontLoader::new(24.0);
         let font = loader.get_or_load(&font_key).expect("Font load failed");
         Self {
             font,
@@ -79,19 +79,27 @@ impl ReconnectIndicator {
         canvas.draw_paint(&paint);
 
         // Draw the spinner
-        paint.set_color(Color::from_argb(255, 80, 80, 80));
-        canvas.draw_circle(center, spinner_radius, &paint);
-
         paint.set_color(Color::WHITE);
-        let arm_x = center.0 + spinner_radius * self.angle.cos();
-        let arm_y = center.1 + spinner_radius * self.angle.sin();
-        canvas.draw_line(center, (arm_x, arm_y), &paint);
+        paint.set_style(Style::Stroke);
+        paint.set_stroke_width(4.0);
+        let rect = Rect::from_xywh(
+            center.0 - spinner_radius,
+            center.1 - spinner_radius,
+            spinner_radius * 2.0,
+            spinner_radius * 2.0,
+        );
+        let mut path = Path::new();
+        let start_angle = self.angle.to_degrees();
+        let sweep_angle = 90.0;
+        path.arc_to(rect, start_angle, sweep_angle, true);
+        canvas.draw_path(&path, &paint);
 
         let width = self.font.skia_font.measure_str(&text, Some(&paint)).0;
         let text_pos = Point::new(
             center.0 - width / 2.0,
-            center.1 + spinner_radius + self.font.skia_font.size(),
+            center.1 + spinner_radius + self.font.skia_font.size()*2.0,
         );
+        paint.set_style(Style::Fill);
         canvas.draw_str(text, text_pos, &self.font.skia_font, &paint);
 
         canvas.restore();
