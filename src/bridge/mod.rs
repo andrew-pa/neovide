@@ -28,6 +28,7 @@ use crate::{
 pub use handler::NeovimHandler;
 use session::{NeovimInstance, NeovimSession};
 use setup::{get_api_information, setup_neovide_specific_state};
+use api_info::ApiInformation;
 
 pub use command::create_nvim_command;
 pub use events::*;
@@ -74,15 +75,19 @@ pub async fn show_error_message(
     nvim.echo(prepared_lines, true, vec![]).await
 }
 
-async fn check_neovim_version(nvim: &Neovim<NeovimWriter>) -> Result<()> {
+async fn check_neovim_version(
+    nvim: &Neovim<NeovimWriter>,
+) -> Result<ApiInformation> {
     for attempt in 0..5 {
-        match nvim
-            .command_output(&format!("echo has('nvim-{NEOVIM_REQUIRED_VERSION}')"))
-            .await
-        {
-            Ok(output) if output == "1" => return Ok(()),
-            Ok(other) => {
-                debug!("Version check attempt {attempt}: {other:?}");
+        match get_api_information(nvim).await {
+            Ok(info) if info.version.has_version(0, 10, 0) => return Ok(info),
+            Ok(info) => {
+                debug!(
+                    "Version check attempt {attempt}: {}.{}.{}",
+                    info.version.major,
+                    info.version.minor,
+                    info.version.patch
+                );
             }
             Err(err) => {
                 debug!("Version check attempt {attempt} failed: {err}");
@@ -106,13 +111,13 @@ async fn launch(
         .await
         .context("Could not locate or start neovim process")?;
 
-    // Ensure the connected Neovim instance meets the minimum version
-    check_neovim_version(&session.neovim).await?;
+    // Ensure the connected Neovim instance meets the minimum version and
+    // retrieve API information for later setup
+    let api_information = check_neovim_version(&session.neovim).await?;
 
     let cmdline_settings = settings.get::<CmdLineSettings>();
 
     let should_handle_clipboard = cmdline_settings.wsl || cmdline_settings.server.is_some();
-    let api_information = get_api_information(&session.neovim).await?;
     info!(
         "Neovide registered to nvim with channel id {}",
         api_information.channel
