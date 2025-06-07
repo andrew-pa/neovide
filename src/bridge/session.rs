@@ -4,18 +4,20 @@
 #[cfg(debug_assertions)]
 use core::fmt;
 use std::{
-    io::{Error, Result},
+    io::{Error, ErrorKind, Result},
     process::Stdio,
 };
 
 use anyhow::Context;
 use nvim_rs::{error::LoopError, neovim::Neovim, Handler};
+use std::time::Duration;
 use tokio::{
     io::{split, AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader},
     net::TcpStream,
     process::{Child, Command},
     spawn,
     task::JoinHandle,
+    time::timeout,
 };
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -60,15 +62,25 @@ impl NeovimSession {
         });
         let handshake_message = "NeovideToNeovimMagicHandshakeMessage";
 
-        let handshake_res = Neovim::<NeovimWriter>::handshake(
-            reader.compat(),
-            Box::new(writer.compat_write()),
-            handler,
-            handshake_message,
+        log::debug!("Starting handshake with Neovim");
+        let handshake_res = timeout(
+            Duration::from_secs(5),
+            Neovim::<NeovimWriter>::handshake(
+                reader.compat(),
+                Box::new(writer.compat_write()),
+                handler,
+                handshake_message,
+            ),
         )
-        .await;
+        .await
+        .map_err(|_| Error::new(ErrorKind::TimedOut, "Handshake timeout"))?;
+        log::debug!(
+            "Handshake result: {:?}",
+            handshake_res.as_ref().map(|_| "ok")
+        );
         match handshake_res {
             Err(err) => {
+                log::error!("Handshake failed: {err}");
                 if let Some(stderr_task) = stderr_task {
                     let stderr = "stderr output:\n".to_owned() + &stderr_task.await?.join("\n");
                     Err(err).context(stderr)
@@ -78,6 +90,8 @@ impl NeovimSession {
             }
             Ok((neovim, io)) => {
                 let io_handle = spawn(io);
+
+                log::debug!("Handshake successful");
 
                 Ok(Self {
                     neovim,
@@ -150,11 +164,22 @@ impl NeovimInstance {
     }
 
     async fn connect_to_server(address: String) -> Result<(BoxedReader, BoxedWriter)> {
+        log::debug!("Connecting to server at {address}");
         if address.contains(':') {
-            Ok(Self::split(TcpStream::connect(address).await?))
+            let stream = timeout(Duration::from_secs(5), TcpStream::connect(&address)).await??;
+            log::debug!("TCP connect succeeded");
+            Ok(Self::split(stream))
         } else {
             #[cfg(unix)]
-            return Ok(Self::split(tokio::net::UnixStream::connect(address).await?));
+            {
+                let stream = timeout(
+                    Duration::from_secs(5),
+                    tokio::net::UnixStream::connect(&address),
+                )
+                .await??;
+                log::debug!("Unix socket connect succeeded");
+                return Ok(Self::split(stream));
+            }
 
             #[cfg(windows)]
             {
@@ -164,6 +189,7 @@ impl NeovimInstance {
                 } else {
                     format!("\\\\.\\pipe\\{}", address)
                 };
+                log::debug!("Named pipe connect to {address}");
                 Ok(Self::split(
                     tokio::net::windows::named_pipe::ClientOptions::new().open(address)?,
                 ))

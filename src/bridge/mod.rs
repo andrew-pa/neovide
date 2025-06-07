@@ -9,15 +9,15 @@ mod ui_commands;
 
 use std::{io::Error, ops::Add, sync::Arc, time::Duration};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use itertools::Itertools;
-use log::info;
+use log::{debug, info, warn};
 use nvim_rs::{error::CallError, Neovim, UiAttachOptions, Value};
 use rmpv::Utf8String;
 use tokio::{
     runtime::{Builder, Runtime},
     select,
-    time::timeout,
+    time::{interval, sleep, timeout},
 };
 use winit::event_loop::EventLoopProxy;
 
@@ -32,6 +32,7 @@ use setup::{get_api_information, setup_neovide_specific_state};
 pub use command::create_nvim_command;
 pub use events::*;
 pub use session::NeovimWriter;
+use ui_commands::update_current_nvim;
 pub use ui_commands::{send_ui, start_ui_command_handler, ParallelCommand, SerialCommand};
 
 const NEOVIM_REQUIRED_VERSION: &str = "0.10.0";
@@ -73,6 +74,27 @@ pub async fn show_error_message(
     nvim.echo(prepared_lines, true, vec![]).await
 }
 
+async fn check_neovim_version(nvim: &Neovim<NeovimWriter>) -> Result<()> {
+    for attempt in 0..5 {
+        match nvim
+            .command_output(&format!("echo has('nvim-{NEOVIM_REQUIRED_VERSION}')"))
+            .await
+        {
+            Ok(output) if output == "1" => return Ok(()),
+            Ok(other) => {
+                debug!("Version check attempt {attempt}: {other:?}");
+            }
+            Err(err) => {
+                debug!("Version check attempt {attempt} failed: {err}");
+            }
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+    Err(anyhow!(
+        "Neovide requires nvim version {NEOVIM_REQUIRED_VERSION} or higher"
+    ))
+}
+
 async fn launch(
     handler: NeovimHandler,
     grid_size: Option<GridSize<u32>>,
@@ -84,18 +106,8 @@ async fn launch(
         .await
         .context("Could not locate or start neovim process")?;
 
-    // Check the neovim version to ensure its high enough
-    match session
-        .neovim
-        .command_output(&format!("echo has('nvim-{NEOVIM_REQUIRED_VERSION}')"))
-        .await
-        .as_deref()
-    {
-        Ok("1") => {} // This is just a guard
-        _ => {
-            bail!("Neovide requires nvim version {NEOVIM_REQUIRED_VERSION} or higher. Download the latest version here https://github.com/neovim/neovim/wiki/Installing-Neovim");
-        }
-    }
+    // Ensure the connected Neovim instance meets the minimum version
+    check_neovim_version(&session.neovim).await?;
 
     let cmdline_settings = settings.get::<CmdLineSettings>();
 
@@ -115,7 +127,6 @@ async fn launch(
     )
     .await?;
 
-    start_ui_command_handler(session.neovim.clone(), settings.clone());
     settings.read_initial_values(&session.neovim).await?;
 
     let mut options = UiAttachOptions::new();
@@ -167,7 +178,73 @@ async fn run(session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
     if let Some(stderr_task) = &mut session.stderr_task {
         timeout(Duration::from_millis(500), stderr_task).await.ok();
     };
+    update_current_nvim(None);
     proxy.send_event(UserEvent::NeovimExited).ok();
+}
+
+async fn run_server(mut session: NeovimSession) {
+    debug!("Monitoring server connection");
+    let mut ping_interval = interval(Duration::from_secs(5));
+    loop {
+        select! {
+            _ = &mut session.io_handle => {
+                debug!("Server connection closed");
+                break;
+            }
+            _ = ping_interval.tick() => {
+                if timeout(Duration::from_secs(2), session.neovim.get_api_info()).await.is_err() {
+                    warn!("Connection ping timed out, aborting I/O task");
+                    session.io_handle.abort();
+                }
+            }
+        }
+    }
+
+    if let Some(stderr_task) = &mut session.stderr_task {
+        timeout(Duration::from_millis(500), stderr_task).await.ok();
+    }
+    update_current_nvim(None);
+    debug!("Server session ended");
+}
+
+async fn run_with_reconnect(
+    handler: NeovimHandler,
+    grid_size: Option<GridSize<u32>>,
+    settings: Arc<Settings>,
+    proxy: EventLoopProxy<UserEvent>,
+) {
+    let address = settings.get::<CmdLineSettings>().server.unwrap_or_default();
+    let mut wait = Duration::from_secs(1);
+    debug!("Starting reconnect loop for {address}");
+    loop {
+        debug!("Attempting connection to {address}");
+        match launch(handler.clone(), grid_size, settings.clone()).await {
+            Ok(session) => {
+                info!("Connected to {address}");
+                start_ui_command_handler(session.neovim.clone(), settings.clone());
+                proxy.send_event(UserEvent::ReconnectStop).ok();
+                proxy.send_event(UserEvent::RedrawRequested).ok();
+                run_server(session).await;
+                warn!("Connection to {address} lost");
+                wait = Duration::from_secs(1);
+            }
+            Err(err) => {
+                log::error!("Failed to connect: {err}");
+            }
+        }
+        proxy
+            .send_event(UserEvent::ReconnectStart {
+                address: address.clone(),
+                wait: wait.as_secs() as u64,
+            })
+            .ok();
+        proxy.send_event(UserEvent::RedrawRequested).ok();
+        debug!("Retrying in {}s", wait.as_secs());
+        sleep(wait).await;
+        if wait < Duration::from_secs(30) {
+            wait *= 2;
+        }
+    }
 }
 
 impl NeovimRuntime {
@@ -185,10 +262,22 @@ impl NeovimRuntime {
         settings: Arc<Settings>,
     ) -> Result<()> {
         let handler = start_editor(event_loop_proxy.clone(), running_tracker, settings.clone());
-        let session = self
-            .runtime
-            .block_on(launch(handler, grid_size, settings))?;
-        self.runtime.spawn(run(session, event_loop_proxy));
+        if settings.get::<CmdLineSettings>().server.is_some() {
+            let proxy = event_loop_proxy.clone();
+            let settings_clone = settings.clone();
+            self.runtime.spawn(async move {
+                run_with_reconnect(handler, grid_size, settings_clone, proxy).await;
+            });
+        } else {
+            let session = self
+                .runtime
+                .block_on(launch(handler, grid_size, settings.clone()))?;
+            let nvim = session.neovim.clone();
+            self.runtime.spawn(async move {
+                start_ui_command_handler(nvim, settings);
+                run(session, event_loop_proxy).await;
+            });
+        }
         Ok(())
     }
 }

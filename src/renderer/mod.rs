@@ -5,6 +5,7 @@ pub mod fonts;
 pub mod grid_renderer;
 pub mod opengl;
 pub mod profiler;
+mod reconnect_indicator;
 mod rendered_layer;
 mod rendered_window;
 mod vsync;
@@ -19,6 +20,7 @@ use std::{
     cmp::Ordering,
     collections::{hash_map::Entry, HashMap},
     sync::Arc,
+    time::Duration,
 };
 
 use itertools::Itertools;
@@ -58,6 +60,7 @@ use crate::profiling::GpuCtx;
 use cursor_renderer::CursorRenderer;
 pub use fonts::caching_shaper::CachingShaper;
 pub use grid_renderer::GridRenderer;
+use reconnect_indicator::ReconnectIndicator;
 pub use rendered_window::{LineFragment, RenderedWindow, WindowDrawCommand, WindowDrawDetails};
 
 pub use vsync::VSync;
@@ -158,6 +161,7 @@ pub struct Renderer {
     pub window_regions: Vec<WindowDrawDetails>,
 
     profiler: profiler::Profiler,
+    reconnect_indicator: ReconnectIndicator,
     pub os_scale_factor: f64,
     pub user_scale_factor: f64,
 
@@ -186,6 +190,7 @@ impl Renderer {
         let window_regions = Vec::new();
 
         let profiler = profiler::Profiler::new(12.0, settings.clone());
+        let reconnect_indicator = ReconnectIndicator::new(settings.clone());
 
         Renderer {
             rendered_windows,
@@ -194,6 +199,7 @@ impl Renderer {
             current_mode,
             window_regions,
             profiler,
+            reconnect_indicator,
             os_scale_factor,
             user_scale_factor,
             settings,
@@ -202,6 +208,14 @@ impl Renderer {
 
     pub fn handle_event(&mut self, event: &WindowEvent) {
         self.cursor_renderer.handle_event(event);
+    }
+
+    pub fn start_reconnect(&mut self, address: String, wait: Duration) {
+        self.reconnect_indicator.start(address, wait);
+    }
+
+    pub fn stop_reconnect(&mut self) {
+        self.reconnect_indicator.stop();
     }
 
     pub fn font_names(&self) -> Vec<String> {
@@ -327,6 +341,7 @@ impl Renderer {
             .draw(&mut self.grid_renderer, root_canvas);
 
         self.profiler.draw(root_canvas, dt);
+        self.reconnect_indicator.draw(root_canvas);
 
         root_canvas.restore();
 
@@ -368,6 +383,9 @@ impl Renderer {
         animating |= self
             .cursor_renderer
             .animate(&self.current_mode, &self.grid_renderer, dt);
+        self.reconnect_indicator.update(dt);
+
+        animating |= self.reconnect_indicator.is_active();
 
         animating
     }

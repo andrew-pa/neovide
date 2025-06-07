@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use log::trace;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -193,6 +193,17 @@ impl WinitWindowWrapper {
         if let Some(skia_renderer) = &self.skia_renderer {
             skia_renderer.window().set_ime_allowed(ime_enabled);
         }
+    }
+
+    pub fn start_reconnect(&mut self, address: String, wait: Duration) {
+        self.renderer.start_reconnect(address, wait);
+        if self.ui_state == UIState::Initing {
+            self.ui_state = UIState::WaitingForWindowCreate;
+        }
+    }
+
+    pub fn stop_reconnect(&mut self) {
+        self.renderer.stop_reconnect();
     }
 
     pub fn handle_window_command(&mut self, command: WindowCommand) {
@@ -431,6 +442,12 @@ impl WinitWindowWrapper {
             }
             UserEvent::ConfigsChanged(config) => {
                 self.handle_config_changed(*config);
+            }
+            UserEvent::ReconnectStart { address, wait } => {
+                self.start_reconnect(address, Duration::from_secs(wait));
+            }
+            UserEvent::ReconnectStop => {
+                self.stop_reconnect();
             }
             _ => {}
         }
