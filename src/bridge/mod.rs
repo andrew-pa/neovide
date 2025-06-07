@@ -11,7 +11,7 @@ use std::{io::Error, ops::Add, sync::Arc, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use itertools::Itertools;
-use log::info;
+use log::{debug, info, warn};
 use nvim_rs::{error::CallError, Neovim, UiAttachOptions, Value};
 use rmpv::Utf8String;
 use tokio::{
@@ -171,14 +171,17 @@ async fn run(session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
 }
 
 async fn run_server(mut session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
+    debug!("Monitoring server connection");
     let mut ping_interval = interval(Duration::from_secs(5));
     loop {
         select! {
             _ = &mut session.io_handle => {
+                debug!("Server connection closed");
                 break;
             }
             _ = ping_interval.tick() => {
                 if timeout(Duration::from_secs(2), session.neovim.get_api_info()).await.is_err() {
+                    warn!("Connection ping timed out, aborting I/O task");
                     session.io_handle.abort();
                 }
             }
@@ -199,11 +202,15 @@ async fn run_with_reconnect(
 ) {
     let address = settings.get::<CmdLineSettings>().server.unwrap_or_default();
     let mut wait = Duration::from_secs(1);
+    debug!("Starting reconnect loop for {address}");
     loop {
+        debug!("Attempting connection to {address}");
         match launch(handler.clone(), grid_size, settings.clone()).await {
             Ok(session) => {
+                info!("Connected to {address}");
                 proxy.send_event(UserEvent::ReconnectStop).ok();
                 run_server(session, proxy.clone()).await;
+                warn!("Connection to {address} lost");
                 wait = Duration::from_secs(1);
             }
             Err(err) => {
@@ -216,6 +223,7 @@ async fn run_with_reconnect(
                 wait: wait.as_secs() as u64,
             })
             .ok();
+        debug!("Retrying in {}s", wait.as_secs());
         sleep(wait).await;
         if wait < Duration::from_secs(30) {
             wait *= 2;

@@ -375,11 +375,13 @@ impl ApplicationHandler<UserEvent> for UpdateLoop {
                 self.pending_draw_commands.push(batch);
             }
             UserEvent::ReconnectStart { address, wait } => {
+                log::debug!("Displaying reconnect spinner: {address} in {}s", wait);
                 self.window_wrapper
                     .start_reconnect(address, Duration::from_secs(wait));
                 self.should_render = ShouldRender::Immediately;
             }
             UserEvent::ReconnectStop => {
+                log::debug!("Hiding reconnect spinner");
                 self.window_wrapper.stop_reconnect();
                 self.should_render = ShouldRender::Immediately;
             }
