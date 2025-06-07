@@ -17,8 +17,7 @@ use rmpv::Utf8String;
 use tokio::{
     runtime::{Builder, Runtime},
     select,
-    time::sleep,
-    time::timeout,
+    time::{sleep, timeout, interval},
 };
 use winit::event_loop::EventLoopProxy;
 
@@ -171,6 +170,27 @@ async fn run(session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
     proxy.send_event(UserEvent::NeovimExited).ok();
 }
 
+async fn run_server(mut session: NeovimSession, proxy: EventLoopProxy<UserEvent>) {
+    let mut ping_interval = interval(Duration::from_secs(5));
+    loop {
+        select! {
+            _ = &mut session.io_handle => {
+                break;
+            }
+            _ = ping_interval.tick() => {
+                if timeout(Duration::from_secs(2), session.neovim.get_api_info()).await.is_err() {
+                    session.io_handle.abort();
+                }
+            }
+        }
+    }
+
+    if let Some(stderr_task) = &mut session.stderr_task {
+        timeout(Duration::from_millis(500), stderr_task).await.ok();
+    }
+    proxy.send_event(UserEvent::NeovimExited).ok();
+}
+
 async fn run_with_reconnect(
     handler: NeovimHandler,
     grid_size: Option<GridSize<u32>>,
@@ -183,7 +203,7 @@ async fn run_with_reconnect(
         match launch(handler.clone(), grid_size, settings.clone()).await {
             Ok(session) => {
                 proxy.send_event(UserEvent::ReconnectStop).ok();
-                run(session, proxy.clone()).await;
+                run_server(session, proxy.clone()).await;
                 wait = Duration::from_secs(1);
             }
             Err(err) => {
