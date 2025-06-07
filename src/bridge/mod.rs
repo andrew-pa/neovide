@@ -9,7 +9,7 @@ mod ui_commands;
 
 use std::{io::Error, ops::Add, sync::Arc, time::Duration};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use itertools::Itertools;
 use log::{debug, info, warn};
 use nvim_rs::{error::CallError, Neovim, UiAttachOptions, Value};
@@ -86,15 +86,17 @@ async fn launch(
         .context("Could not locate or start neovim process")?;
 
     // Check the neovim version to ensure its high enough
-    match session
+    let version_res = session
         .neovim
         .command_output(&format!("echo has('nvim-{NEOVIM_REQUIRED_VERSION}')"))
-        .await
-        .as_deref()
-    {
-        Ok("1") => {} // This is just a guard
-        _ => {
-            bail!("Neovide requires nvim version {NEOVIM_REQUIRED_VERSION} or higher. Download the latest version here https://github.com/neovim/neovim/wiki/Installing-Neovim");
+        .await;
+    match version_res.as_deref() {
+        Ok("1") => {} // Version check passed
+        other => {
+            log::error!(
+                "Unexpected Neovim version check result: {:?}. Continuing anyway",
+                other
+            );
         }
     }
 
@@ -259,8 +261,11 @@ impl NeovimRuntime {
             let session = self
                 .runtime
                 .block_on(launch(handler, grid_size, settings.clone()))?;
-            start_ui_command_handler(session.neovim.clone(), settings);
-            self.runtime.spawn(run(session, event_loop_proxy));
+            let nvim = session.neovim.clone();
+            self.runtime.spawn(async move {
+                start_ui_command_handler(nvim, settings);
+                run(session, event_loop_proxy).await;
+            });
         }
         Ok(())
     }
